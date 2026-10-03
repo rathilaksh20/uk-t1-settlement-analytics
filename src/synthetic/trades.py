@@ -4,13 +4,14 @@ Creates trade facts only (instrument, counterparty, side, quantity, price,
 timestamp, settlement date). Confirmation and matching statuses are set to
 PENDING here; the causal stage model fills them in the next step.
 
-All data produced here is SYNTHETIC. Prices below are PLACEHOLDER levels
-in GBP, to be replaced by real prices in Week 4.
+All data produced here is SYNTHETIC. Prices come from market_prices_daily when
+real prices are loaded; otherwise PLACEHOLDER levels (GBP) are used.
 
 Run from the project root:
     python -m src.synthetic.trades --n 1000 --reset
 """
 import argparse
+import bisect
 import os
 from datetime import date, datetime, timedelta
 
@@ -49,9 +50,27 @@ def intraday_minute_weights():
     return minutes, w / w.sum()
 
 
+def make_price_lookup(price_rows):
+    """price_rows: iterable of (ticker, price_date, close_gbp). Returns a function
+    price_on(ticker, day) giving the latest close ON OR BEFORE that day, else None."""
+    series = {}
+    for t, d, c in price_rows:
+        series.setdefault(t, []).append((d, float(c)))
+    dates = {t: sorted(v) for t, v in series.items()}
+    keys = {t: [d for d, _ in v] for t, v in dates.items()}
+
+    def price_on(ticker, day):
+        if ticker not in dates:
+            return None
+        i = bisect.bisect_right(keys[ticker], day)
+        return dates[ticker][i - 1][1] if i else None
+    return price_on
+
+
 def generate_trades(n, seed, instruments, counterparty_ids, holidays,
-                    start=START, end=END, cycle_days=2):
-    """instruments: list of (instrument_id, ticker). Returns a list of dicts."""
+                    start=START, end=END, cycle_days=2, price_lookup=None):
+    """instruments: list of (instrument_id, ticker). Returns a list of dicts.
+    price_lookup(ticker, day) -> real GBP close or None (then the placeholder is used)."""
     rng = np.random.default_rng(seed)
     days = business_days_between(start, end, holidays)
     minutes, minute_w = intraday_minute_weights()
@@ -69,11 +88,12 @@ def generate_trades(n, seed, instruments, counterparty_ids, holidays,
         qty = int(np.clip(rng.lognormal(mean=np.log(8000), sigma=1.0), 100, 500_000))
         qty = max(100, round(qty / 100) * 100)
 
-        base = PLACEHOLDER_PRICE_GBP[ticker]
-        price = round(base * float(rng.normal(1.0, 0.01)), 4)
-        price = max(price, 0.01)
-
         trade_day = days[rng.integers(len(days))]
+        base = price_lookup(ticker, trade_day) if price_lookup else None
+        if base is None:
+            base = PLACEHOLDER_PRICE_GBP[ticker]
+        price = round(base * float(rng.normal(1.0, 0.01)), 4)   # +/-1% intraday variation
+        price = max(price, 0.01)
         minute = int(rng.choice(minutes, p=minute_w))
         trade_dt = datetime(trade_day.year, trade_day.month, trade_day.day,
                             minute // 60, minute % 60)
@@ -114,8 +134,9 @@ def main():
             print(f"{existing} trades already exist. Use --reset to regenerate.")
             return
         if args.reset:
-                        for t in ("exceptions", "settlement_flags", "settlement_events", "stage_durations","settlement_status", "trades"):
-                            conn.execute(text(f"DELETE FROM {t}"))
+            for t in ("exceptions", "settlement_flags", "settlement_events", "stage_durations",
+                      "settlement_status", "trades"):
+                conn.execute(text(f"DELETE FROM {t}"))
 
         instruments = [tuple(r) for r in conn.execute(
             text("SELECT instrument_id, ticker FROM instruments ORDER BY 1"))]
@@ -124,7 +145,18 @@ def main():
         holidays = {r[0] for r in conn.execute(text(
             "SELECT calendar_date FROM business_calendar WHERE holiday_name IS NOT NULL"))}
 
-        trades = generate_trades(args.n, args.seed, instruments, cps, holidays)
+        price_lookup = None
+        has_table = conn.execute(text("SELECT to_regclass('public.market_prices_daily')")).scalar()
+        if has_table:
+            price_rows = conn.execute(text(
+                "SELECT i.ticker, p.price_date, p.close_gbp FROM market_prices_daily p "
+                "JOIN instruments i ON i.isin = p.isin")).all()
+            if price_rows:
+                price_lookup = make_price_lookup(price_rows)
+        print("Using REAL prices from market_prices_daily." if price_lookup
+              else "No real prices found: using PLACEHOLDER prices.")
+
+        trades = generate_trades(args.n, args.seed, instruments, cps, holidays, price_lookup=price_lookup)
         conn.execute(text(
             "INSERT INTO trades (trade_id, instrument_id, counterparty_id, side, quantity, price, "
             "trade_currency, trade_datetime, settlement_date, confirmation_status, matching_status) "
