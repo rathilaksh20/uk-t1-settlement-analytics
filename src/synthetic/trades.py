@@ -114,8 +114,8 @@ def main():
             print(f"{existing} trades already exist. Use --reset to regenerate.")
             return
         if args.reset:
-            for t in ("exceptions", "settlement_events", "settlement_status", "trades"):
-                conn.execute(text(f"DELETE FROM {t}"))
+                        for t in ("exceptions", "settlement_flags", "settlement_events", "stage_durations","settlement_status", "trades"):
+                            conn.execute(text(f"DELETE FROM {t}"))
 
         instruments = [tuple(r) for r in conn.execute(
             text("SELECT instrument_id, ticker FROM instruments ORDER BY 1"))]
