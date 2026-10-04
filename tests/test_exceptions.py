@@ -63,3 +63,12 @@ def test_unknown_flag_rejected():
         assert False
     except ValueError:
         pass
+
+
+def test_old_exceptions_cannot_stay_open_when_open_after_is_set():
+    r = np.random.default_rng(9)
+    future = datetime(2100, 1, 1)
+    for flag in ("CASH_SHORTFALL", "SECURITIES_SHORTFALL", "RECONCILIATION_BREAK"):
+        for _ in range(500):
+            e = build_exception(flag, 2e5, EV, DL, r, HOL, open_after=future)
+            assert e["resolution_status"] == "RESOLVED" and e["resolved_at"] is not None

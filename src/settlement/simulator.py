@@ -9,20 +9,27 @@ settlement date, and keep each internal cut-off no earlier than the close of the
 trade date. For T+2 the floor never binds, so results match the original rules engine.
 """
 from collections import Counter
+from datetime import datetime, time
 
 from src.settlement.clock import add_business_hours
 from src.settlement.dates import settlement_date
 from src.settlement.rules import deadlines, evaluate
 
 
-def cycle_deadlines(trade_dt, cycle_days, holidays):
-    """Return (settlement_date, deadlines dict) for a trade under a T+cycle_days cycle."""
+def cycle_deadlines(trade_dt, cycle_days, holidays, cutoff="strict"):
+    """Return (settlement_date, deadlines dict) for a trade under a T+cycle_days cycle.
+
+    cutoff (T+1 only): "strict"  = matching and instruction must finish by the close of the trade date;
+                       "relaxed" = matching by 09:00 and instruction by 10:00 on the settlement morning."""
     trade_day = trade_dt.date()
     settle = settlement_date(trade_day, cycle_days, holidays)
     d = deadlines(trade_dt, settle, holidays)
     close_of_trade_day = d["conf_deadline"]
     d["match_deadline"] = max(d["match_deadline"], close_of_trade_day)
     d["instr_deadline"] = max(d["instr_deadline"], close_of_trade_day)
+    if cycle_days == 1 and cutoff == "relaxed":
+        d["match_deadline"] = datetime.combine(settle, time(9, 0))
+        d["instr_deadline"] = datetime.combine(settle, time(10, 0))
     return settle, d
 
 
@@ -32,6 +39,7 @@ def replay_trade(t, cycle_days, holidays, levers=None):
     reconciliation_break. levers (all optional):
       all / confirmation / matching / instruction : multipliers on stage durations (0.8 = 20% faster)
       cp : {counterparty_id: multiplier} applied to that counterparty's confirmation and matching time
+      cutoff : "strict" (default) or "relaxed", the T+1 cut-off assumption
     """
     lv = levers or {}
     base = lv.get("all", 1.0)
@@ -41,7 +49,7 @@ def replay_trade(t, cycle_days, holidays, levers=None):
     instr_h = t["instr_h"] * base * lv.get("instruction", 1.0)
 
     start = t["trade_datetime"]
-    settle, dl = cycle_deadlines(start, cycle_days, holidays)
+    settle, dl = cycle_deadlines(start, cycle_days, holidays, lv.get("cutoff", "strict"))
     t_conf = add_business_hours(start, conf_h, holidays)
     t_match = add_business_hours(t_conf, match_h, holidays)
     t_instr = add_business_hours(t_conf, instr_h, holidays)
@@ -73,12 +81,12 @@ def summarise(results, notional_by_trade):
     }
 
 
-def find_breakeven_factor(trades, holidays, target_at_risk, cycle_days=1, step=0.05):
+def find_breakeven_factor(trades, holidays, target_at_risk, cycle_days=1, step=0.05, base_levers=None):
     """Largest uniform duration multiplier (1.0 = no change) at which the T+cycle
     at-risk count is no higher than target_at_risk. None if unreachable."""
     f = 1.0
     while f >= 0.0 - 1e-9:
-        res = run_scenario(trades, cycle_days, holidays, {"all": max(f, 0.0)})
+        res = run_scenario(trades, cycle_days, holidays, {**(base_levers or {}), "all": max(f, 0.0)})
         if sum(1 for r in res.values() if r["at_risk"]) <= target_at_risk:
             return round(f, 2)
         f -= step

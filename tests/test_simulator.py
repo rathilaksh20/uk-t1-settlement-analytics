@@ -89,3 +89,24 @@ def test_summarise():
     notional = {t["trade_id"]: 1000.0 for t in trades}
     s = summarise(res, notional)
     assert s["trades"] == 100 and s["at_risk_notional"] == 1000.0 * s["at_risk_trades"]
+
+
+def test_relaxed_deadlines_and_ordering():
+    start = datetime(2026, 10, 1, 10, 0)            # Thursday, settles Friday under T+1
+    _, d = cycle_deadlines(start, 1, set(), cutoff="relaxed")
+    assert d["match_deadline"] == datetime(2026, 10, 2, 9, 0)
+    assert d["instr_deadline"] == datetime(2026, 10, 2, 10, 0)
+    assert d["settle_cutoff"] == datetime(2026, 10, 2, 12, 0)
+    _, d2 = cycle_deadlines(start, 2, set(), cutoff="relaxed")        # cutoff only affects T+1
+    assert d2["match_deadline"] == datetime(2026, 10, 2, 12, 0)
+
+
+def test_relaxed_sits_between_t2_and_strict_t1():
+    trades, _ = build_inputs()
+    t2 = run_scenario(trades, 2, HOL)
+    strict = run_scenario(trades, 1, HOL)
+    relaxed = run_scenario(trades, 1, HOL, {"cutoff": "relaxed"})
+    for tid in t2:
+        assert set(t2[tid]["flags"]) <= set(relaxed[tid]["flags"]) <= set(strict[tid]["flags"])
+    n = lambda r: sum(x["at_risk"] for x in r.values())
+    assert n(t2) < n(relaxed) < n(strict)

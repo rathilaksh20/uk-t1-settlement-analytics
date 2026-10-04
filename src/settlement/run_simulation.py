@@ -82,11 +82,13 @@ def main():
     scenarios = [
         ("T2_baseline", 2, {}),
         ("T1_as_is", 1, {}),
+        ("T1_relaxed_cutoff", 1, {"cutoff": "relaxed"}),
         ("T1_confirmation_faster_20pct", 1, {"confirmation": 0.8}),
         ("T1_matching_faster_30pct", 1, {"matching": 0.7}),
         ("T1_instruction_faster_30pct", 1, {"instruction": 0.7}),
         ("T1_all_stages_faster_25pct", 1, {"all": 0.75}),
         ("T1_worst3_counterparties_halved", 1, {"cp": {cp: 0.5 for cp in worst3}}),
+        ("T1_relaxed_matching_faster_30pct", 1, {"cutoff": "relaxed", "matching": 0.7}),
     ]
     for mult in (0.8, 0.9, 1.1, 1.2):
         scenarios.append((f"T1_sensitivity_durations_x{mult}", 1, {"all": mult}))
@@ -118,16 +120,18 @@ def main():
 
     print("\nFlags by type (count of trades):")
     kinds = sorted({k for s in summaries.values() for k in s["flags"]})
-    print(f"{'flag':<24}{'T+2':>8}{'T+1':>8}")
+    print(f"{'flag':<24}{'T+2':>8}{'T+1 strict':>12}{'T+1 relaxed':>13}")
     for k in kinds:
-        print(f"{k:<24}{base['flags'].get(k, 0):>8}{summaries['T1_as_is']['flags'].get(k, 0):>8}")
+        print(f"{k:<24}{base['flags'].get(k, 0):>8}{summaries['T1_as_is']['flags'].get(k, 0):>12}"
+              f"{summaries['T1_relaxed_cutoff']['flags'].get(k, 0):>13}")
 
-    f = find_breakeven_factor(trades, holidays, base["at_risk_trades"])
-    if f is None:
-        print("\nBreakeven: no uniform speed-up restores the T+2 level.")
-    else:
-        print(f"\nBreakeven: cutting every stage time to {f:.0%} of today's "
-              f"(a {100 * (1 - f):.0f}% reduction) brings T+1 back to the T+2 at-risk level.")
+    for label, lv in (("strict", None), ("relaxed", {"cutoff": "relaxed"})):
+        f = find_breakeven_factor(trades, holidays, base["at_risk_trades"], base_levers=lv)
+        if f is None:
+            print(f"\nBreakeven ({label} cut-off): no uniform speed-up restores the T+2 level.")
+        else:
+            print(f"\nBreakeven ({label} cut-off): cutting every stage time to {f:.0%} of today's "
+                  f"(a {100 * (1 - f):.0f}% reduction) brings T+1 back to the T+2 at-risk level.")
     print(f"Worst 3 counterparties under T+1: {', '.join(worst3)}")
 
 

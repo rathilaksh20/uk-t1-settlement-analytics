@@ -30,8 +30,10 @@ def severity_for(flag, notional):
     return SEVERITIES[min(2, base + bump)]
 
 
-def build_exception(flag, notional, ev, dl, rng, holidays):
+def build_exception(flag, notional, ev, dl, rng, holidays, open_after=None):
     """ev: dict with t_conf, t_match, t_instr. dl: deadlines dict.
+    open_after: if given, only exceptions created at or after this time may stay OPEN
+    (older ones would have been closed or escalated in a real operation).
     Returns a dict ready to insert into the exceptions table."""
     status = "RESOLVED"
     if flag == "UNMATCHED":
@@ -46,13 +48,13 @@ def build_exception(flag, notional, ev, dl, rng, holidays):
         created = dl["match_deadline"] - timedelta(hours=3)          # pre-funding check
         hours = float(rng.lognormal(np.log(6.0), 0.7))
         resolved = add_business_hours(created, hours, holidays)
-        if rng.random() < 0.04:
+        if rng.random() < 0.04 and (open_after is None or created >= open_after):
             status, resolved = "OPEN", None
     elif flag == "RECONCILIATION_BREAK":
         created = dl["settle_cutoff"] + timedelta(hours=4)           # post-settlement recon
         hours = float(rng.lognormal(np.log(30.0), 0.6))
         resolved = add_business_hours(created, hours, holidays)
-        if rng.random() < 0.10:
+        if rng.random() < 0.10 and (open_after is None or created >= open_after):
             status, resolved = "OPEN", None
     else:
         raise ValueError(f"Unknown flag: {flag}")
@@ -94,6 +96,7 @@ def main():
 
         conn.execute(text("DELETE FROM exceptions"))
         rng = np.random.default_rng(args.seed + 3)
+        open_after = max(t["trade_datetime"] for t in trades.values()) - timedelta(days=14)
         rows, by_type, by_sev = [], Counter(), Counter()
         for trade_id, flag in flags:
             t = trades[trade_id]
@@ -102,7 +105,7 @@ def main():
                   "t_instr": events[trade_id]["INSTRUCTION_SENT"]}
             dl = deadlines(t["trade_datetime"], t["settlement_date"], holidays)
             notional = float(t["quantity"]) * float(t["price"])
-            exc = build_exception(flag, notional, ev, dl, rng, holidays)
+            exc = build_exception(flag, notional, ev, dl, rng, holidays, open_after=open_after)
             rows.append({"trade_id": trade_id, **exc})
             by_type[flag] += 1
             by_sev[exc["severity"]] += 1
